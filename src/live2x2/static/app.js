@@ -1,8 +1,13 @@
-/* Browser-only playback. One 3D plot, bounded prefetch, no camera websocket. */
+/* Browser-only playback. Two reusable 3D buffers, bounded prefetch, no camera websocket. */
 "use strict";
 (() => {
   const el = id => document.getElementById(id);
-  const plot = el("plot3d"), projection = el("plot2d");
+  let plot = el("plot3d"), spare = el("plot3d-buffer");
+  const projection = el("plot2d");
+  const sceneNodes = [plot, spare];
+  let prepared = null, warmTimer = null, viewportEpoch = 0;
+  // Exactly two scenes, not one scene per event. A prepared back scene has its
+  // own hit buffers/colorbar; promotion changes visibility and camera only.
   const config = {responsive: true, displaylogo: false, scrollZoom: true,
     toImageButtonOptions: {format: "png", width: 1920, height: 1080, scale: 1}};
   let catalog = null, pending = null, position = -1, current = null;
@@ -77,21 +82,108 @@
       cauto:false, cmin:event.color.minimum, cmax:event.color.maximum,
       colorbar:{title:{text:"log10(Q)"},thickness:14,len:.58}};
   }
-  async function commit3D(traces, layout) {
-    // No await before acquiring the lock: drain the one camera update in flight,
-    // then patch the scene. Fetching/JSON preparation happen OUTSIDE this lock.
-    plotBusy = true;
-    const waitStart = performance.now();
+  function stageKey(manifest, nextPosition) {
+    return `${manifest.generation}/${nextPosition < 0 ? "empty" : manifest.events[nextPosition].event_index}`;
+  }
+  async function prepareScene(manifest, nextPosition, background=false) {
+    const key=stageKey(manifest,nextPosition);
+    // Multiple newer catalogs can queue while a slow preparation is in flight.
+    // Re-check after EVERY await; manual navigation owns the next promotion.
+    for (;;) {
+      if (background && (navigationBusy || document.hidden)) return null;
+      const predecessor=prepared;
+      if (!predecessor) break;
+      if (predecessor.key===key && predecessor.slot===spare) return predecessor.promise;
+      await predecessor.promise.catch(() => {});
+      if (background && (navigationBusy || document.hidden)) return null;
+      if (prepared===predecessor) { prepared=null; break; }
+    }
+    const job={key,manifest,nextPosition,slot:spare,ready:false};
+    prepared=job;
+    job.promise=(async() => {
+      const fetchStart=performance.now();
+      job.event=nextPosition<0 ? null : await eventData(manifest,manifest.events[nextPosition].event_index);
+      job.fetchMs=performance.now()-fetchStart;
+      if (job.slot===plot) throw new Error("Refusing to redraw the visible scene during preparation");
+      const layout=baseLayout(manifest);
+      const event=job.event;
+      const traces=geometryTraces(manifest.geometry);
+      if (event) {
+        const h=event.hits;
+        traces.unshift({type:"scatter3d",mode:"markers",x:h.z,y:h.x,z:h.y,
+          marker:marker(event),customdata:h.Q,name:"Charge hits",showlegend:false,
+          hovertemplate:"z=%{x:.2f} cm<br>x=%{y:.2f} cm<br>y=%{z:.2f} cm<br>Q=%{customdata:.4g}<extra></extra>"});
+      }
+      layout.annotations = event?.summary.plotted_hits ? [] : [{
+        text:event ? "No renderable hits in this random event" : "This completed FLOW file contains no event rows",
+        xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false
+      }];
+      job.epoch=viewportEpoch;
+      job.slot.dataset.preparedReady="false";
+      const start=performance.now();
+      await Plotly.react(job.slot,traces,layout,config);
+      job.prepareMs=performance.now()-start;
+      job.ready=true;
+      job.slot.dataset.preparedReady="true";
+      job.slot.dataset.preparedKey=key;
+      return job;
+    })().catch(error => {
+      if (prepared===job) prepared=null;
+      throw error;
+    });
+    return job.promise;
+  }
+  function scheduleWarm() {
+    clearTimeout(warmTimer);
+    // Let the committed event paint before preparing another WebGL scene.
+    // Plotly's work still shares the main thread; this is not a worker renderer.
+    warmTimer=setTimeout(() => {
+      if (navigationBusy || document.hidden || !catalog) return;
+      const target=pending || catalog;
+      const nextPosition=target.events.length ?
+        (target.generation!==catalog.generation ? 0 : (position+1)%target.events.length) : -1;
+      if (!target.events.length && target===catalog) return;
+      prepareScene(target,nextPosition,true).catch(error => {
+        console.warn("live2x2 next-scene preparation; retry on navigation",error);
+      });
+    },200);
+  }
+  async function commit3D(job, automatic=false) {
+    if (job.slot!==spare || !job.ready) throw new Error("Prepared scene is no longer the back buffer");
+    // Resizing a ready back scene happens while the old scene can still rotate.
+    if (job.epoch!==viewportEpoch) {
+      await Plotly.Plots.resize(job.slot);
+      job.epoch=viewportEpoch;
+    }
+    plotBusy=true;
+    const waitStart=performance.now();
     try {
       await cameraPromise;
-      const renderStart = performance.now();
-      // Capture the last visible camera, not an older prefetch-time orientation.
-      layout.scene.camera = camera;
-      await Plotly.react(plot, traces, layout, config);
-      return {camera_wait_ms: renderStart-waitStart, plot_ms: performance.now()-renderStart};
+      if (automatic && (!cycling || document.hidden)) return null;
+      const swapStart=performance.now();
+      // Synchronize the already-rendered scene to the LAST visible pose. Never
+      // reset to the orientation used when pre-rendering several seconds ago.
+      const pose={eye:{...camera.eye},center:{...camera.center},up:{...camera.up}};
+      await Plotly.relayout(job.slot,{"scene.camera":pose});
+      if (automatic && (!cycling || document.hidden)) return null;
+      // No crossfade/morph: unrelated detector events must not be blended.
+      const old=plot;
+      plot=job.slot;
+      spare=old;
+      spare.id="plot3d-buffer";
+      plot.id="plot3d";
+      spare.style.opacity="0";
+      spare.style.pointerEvents="none";
+      spare.setAttribute("aria-hidden","true");spare.inert=true;
+      plot.style.opacity="1";
+      plot.style.pointerEvents="auto";
+      plot.setAttribute("aria-hidden","false");plot.inert=false;
+      if (prepared===job) prepared=null;
+      return {camera_wait_ms:swapStart-waitStart,plot_ms:performance.now()-swapStart,
+        prepare_ms:job.prepareMs,pre_rendered:job.preRendered};
     } finally {
-      plotBusy = false;
-      lastDraw = lastFrame = 0; // Do not jump forward to "catch up" after a commit.
+      plotBusy=false;
+      lastDraw=lastFrame=0;
     }
   }
   function baseLayout(manifest) {
@@ -105,16 +197,11 @@
       scene:{xaxis:axis("z"),yaxis:axis("x"),zaxis:axis("y"),camera,
         aspectmode:"manual",aspectratio:{x:length("z")/unit,y:length("x")/unit,z:length("y")/unit}}};
   }
-  async function render(event, manifest, nextPosition, fetchMs) {
-    const hits = event.hits, g = manifest.geometry;
-    const trace = {type:"scatter3d",mode:"markers",x:hits.z,y:hits.x,z:hits.y,
-      marker:marker(event),customdata:hits.Q, name:"Charge hits",showlegend:false,
-      hovertemplate:"z=%{x:.2f} cm<br>x=%{y:.2f} cm<br>y=%{z:.2f} cm<br>Q=%{customdata:.4g}<extra></extra>"};
-    const layout = baseLayout(manifest);
-    layout.annotations = event.summary.plotted_hits ? [] : [{
-      text:"No renderable hits in this random event",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false
-    }];
-    const timing = await commit3D([trace,...geometryTraces(g)], layout);
+  async function render(job, automatic) {
+    const {event,manifest,nextPosition,fetchMs}=job;
+    const g=manifest.geometry;
+    const timing=await commit3D(job,automatic);
+    if (!timing) return false;
     // Commit visible state only after Plotly succeeds; a fetch failure/slow fetch
     // must not change the filename, file age, position or projections underneath it.
     current = event;
@@ -133,7 +220,9 @@
       "File event count":manifest.total_events,"Sampling":"Uniform event rows without replacement",
       "Cleaning":"None (raw calibrated hits)","Completion evidence":manifest.completion,
       "Charge scale":"Per event, log10(Q); input units","Geometry":g.source,
-      "Last transition (ms)":`Fetch wait ${number(fetchMs,1)} · camera settle ${number(timing.camera_wait_ms,1)} · 3D update ${number(timing.plot_ms,1)}`};
+      "Transition mode":"Two-scene pre-rendered handover",
+      "Next scene ready at navigation":timing.pre_rendered ? "Yes" : "No; prepared while old event remained visible",
+      "Last transition (ms)":`Fetch ${number(fetchMs,1)} · preparation ${number(timing.prepare_ms,1)} · camera settle ${number(timing.camera_wait_ms,1)} · handover ${number(timing.plot_ms,1)}`};
     Object.entries(rows).forEach(([key,value]) => {
       const dt=document.createElement("dt"),dd=document.createElement("dd");
       dt.textContent=key;dd.textContent=String(value);el("metadata").append(dt,dd);
@@ -141,7 +230,10 @@
     plot.dataset.generation=manifest.generation;plot.dataset.eventIndex=event.event_index;
     plot.dataset.fetchMs=String(fetchMs);
     plot.dataset.renderMs=String(timing.plot_ms);
+    plot.dataset.prepareMs=String(timing.prepare_ms);
+    plot.dataset.preRendered=String(timing.pre_rendered);
     requestProjections(); // Never extend the 3D lock/dwell with a projection draw.
+    return true;
   }
   async function renderProjections(event, manifest) {
     const b=manifest.geometry.bounds,h=event.hits;
@@ -202,6 +294,7 @@
   async function move(step, {usePending=true, automatic=false}={}) {
     if (navigationBusy) return;
     clearTimeout(timer);
+    clearTimeout(warmTimer);
     const target=(usePending && pending) || catalog;
     if (!target) { schedule(); return; }
     const switching=target.generation!==catalog?.generation;
@@ -209,16 +302,15 @@
       (switching ? 0 : (position+step+target.events.length)%target.events.length) : -1;
     navigationBusy=true; // Guards duplicate Next clicks, NOT the camera.
     try {
-      const fetchStart=performance.now();
-      const data=nextPosition<0 ? null : await eventData(target,target.events[nextPosition].event_index);
-      const fetchMs=performance.now()-fetchStart;
+      const preRendered=prepared?.key===stageKey(target,nextPosition) && prepared.ready && prepared.slot===spare;
+      const job=await prepareScene(target,nextPosition);
+      job.preRendered=Boolean(preRendered);
+      const data=job.event;
       // Pausing during a slow automatic fetch means stay on the inspected event.
       // The already-prefetched payload remains usable on manual Next or Resume.
       if (automatic && (!cycling || document.hidden)) return;
       if (!data) {
-        const layout=baseLayout(target);
-        layout.annotations=[{text:"This completed FLOW file contains no event rows",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false}];
-        await commit3D(geometryTraces(target.geometry),layout);
+        if (!await commit3D(job,automatic)) return;
         catalog=target;position=-1;current=null;
         el("event-title").textContent="Latest FLOW contains no events";
         el("event-detail").textContent=target.source.name;
@@ -229,7 +321,7 @@
         requestProjections();
         note("No event rows to sample. Waiting for a newer completed file.");
       } else {
-        await render(data,target,nextPosition,fetchMs);
+        if (!await render(job,automatic)) return;
         note(target.demo ? "SYNTHETIC DEMO — not detector data." :
           (serverStatus?.worker?.error_code ? "Worker reports an error; showing the last published sample." : ""));
         const next=target.events[(nextPosition+1)%target.events.length].event_index;
@@ -242,7 +334,7 @@
     } catch (error) {
       el("latest").hidden=!pending;
       note(`Cannot load next event (${error.message}); keeping the current event and retrying.`);
-    } finally { navigationBusy=false; schedule(); }
+    } finally { navigationBusy=false; schedule(); scheduleWarm(); }
   }
   async function poll() {
     if (pollBusy) return;
@@ -255,6 +347,7 @@
         pending=candidate;el("latest").hidden=false;
         if (candidate.events.length) eventData(candidate,candidate.events[0].event_index).catch(() => {});
         if (!catalog) await move(1);
+        else if (!navigationBusy) scheduleWarm();
       }
     } catch (error) {
       offline=true;
@@ -272,7 +365,7 @@
     const eye=camera.eye,cs=Math.cos(angle),sn=Math.sin(angle);
     camera={...camera,eye:{x:eye.x*cs-eye.y*sn,y:eye.x*sn+eye.y*cs,z:eye.z}};
     cameraBusy=true;
-    cameraPromise=Promise.resolve(Plotly.relayout(plot,{"scene.camera":camera})).catch(error => {
+    cameraPromise=Promise.resolve().then(() => Plotly.relayout(plot,{"scene.camera":camera})).catch(error => {
       el("rotate").checked=false;note(`Camera rotation paused: ${error.message}`);
     }).finally(() => { cameraBusy=false; });
   }
@@ -284,16 +377,31 @@
     el("playback").setAttribute("aria-pressed",String(!cycling));schedule(); };
   el("dwell").onchange=schedule;
   el("rotate").onchange=() => {lastDraw=0;};
-  plot.addEventListener("pointerdown",pauseRotation);
-  plot.addEventListener("wheel",pauseRotation,{passive:true});
+  for (const node of sceneNodes) {
+    node.addEventListener("pointerdown",() => {if (node===plot) pauseRotation();});
+    node.addEventListener("wheel",() => {if (node===plot) pauseRotation();},{passive:true});
+  }
   el("projection-details").addEventListener("toggle",requestProjections);
-  document.addEventListener("visibilitychange",() => {lastDraw=lastFrame=0;schedule();if (!document.hidden) poll();});
-  window.addEventListener("resize",() => {if(current && !plotBusy && !cameraBusy) Plotly.Plots.resize(plot);});
-  window.addEventListener("pagehide",() => {clearTimeout(timer);cancelAnimationFrame(frameId);});
+  document.addEventListener("visibilitychange",() => {
+    lastDraw=lastFrame=0;schedule();
+    if (!document.hidden) {poll();scheduleWarm();}
+    else clearTimeout(warmTimer);
+  });
+  window.addEventListener("resize",() => {
+    viewportEpoch++;
+    if (current && !plotBusy && !cameraBusy) Plotly.Plots.resize(plot);
+  });
+  window.addEventListener("pagehide",() => {clearTimeout(timer);clearTimeout(warmTimer);cancelAnimationFrame(frameId);});
   async function start() {
     if (!window.Plotly) { note("Plotly.js is missing. Run live2x2 assets before serving.");return; }
-    await Plotly.newPlot(plot,[],{scene:{camera},margin:{t:0}},config);
-    plot.on("plotly_relayout",event => {if (!cameraBusy && event["scene.camera"]) camera=event["scene.camera"];});
+    for (const node of sceneNodes) {
+      await Plotly.newPlot(node,[],{scene:{camera},margin:{t:0}},config);
+      node.on("plotly_relayout",event => {
+        if (node===plot && !cameraBusy && !plotBusy && event["scene.camera"]) camera=event["scene.camera"];
+      });
+    }
+    spare.style.opacity="0";spare.style.pointerEvents="none";
+    spare.setAttribute("aria-hidden","true");spare.inert=true;
     await poll();setInterval(poll,15000);setInterval(statusLabel,1000);schedule();
     frameId=requestAnimationFrame(animation);
   }

@@ -28,3 +28,4 @@ jobs:
             sleep 1
           done
           python scripts/benchmark_transitions.py --points 20000 --repeats 4
+          python scripts/benchmark_buffered.py --points 20000 --transitions 6
