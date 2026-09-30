@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+*.egg-info
+cache
+demo-cache
+tests
+*.h5
+*.hdf5
+*.pkl
+*.npz

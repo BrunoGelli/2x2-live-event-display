@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live2x2"
+version = "0.1.0"
+description = "Nearline 2x2 Run-3 event display for shifters at NERSC"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+
+[project.optional-dependencies]
+worker = [
+  "numpy>=1.24,<3", "h5py>=3.8,<4",
+  "ucd2x2-analysis @ git+https://github.com/BrunoGelli/UCD_2x2_Analysis_Framework.git@0400d9b788d4515bee9a22b230df08937475d0ef",
+]
+dev = ["pytest>=8,<9", "httpx>=0.27,<1", "numpy>=1.24,<3", "h5py>=3.8,<4"]
+
+[project.scripts]
+live2x2 = "live2x2.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+live2x2 = ["static/*.html", "static/*.css", "static/*.js", "static/vendor/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

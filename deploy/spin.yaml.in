@@ -1,0 +1,77 @@
+# TEMPLATE ONLY. Replace every ${...}; review before applying.
+# CACHE_PATH must be a dedicated existing CFS directory, not the FLOW root.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: live2x2-web
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: live2x2-web}
+  template:
+    metadata:
+      labels: {app: live2x2-web}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${NERSC_UID}
+        runAsGroup: ${NERSC_GID}
+        fsGroup: ${NERSC_GID}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: web
+          image: ${IMAGE}
+          ports: [{name: http, containerPort: 8000}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: cache, mountPath: /cache, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: cache
+          hostPath: {path: "${CACHE_PATH}", type: Directory}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: live2x2-web
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector: {app: live2x2-web}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: live2x2-web
+  namespace: ${NAMESPACE}
+spec:
+  ingressClassName: ${INGRESS_CLASS}
+  tls:
+    - hosts: ["${HOST}"]
+      secretName: ${TLS_SECRET}
+  rules:
+    - host: ${HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: live2x2-web
+                port: {name: http}
