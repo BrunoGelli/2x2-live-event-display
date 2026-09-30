@@ -2,6 +2,8 @@
 
 Uses a dedicated DEMO server. Network interception changes only this test browser's
 payloads, not the server cache. Measurements are diagnostics, not fixed FPS promises.
+UI mouse interaction is tested separately by browser_smoke.py; this benchmark invokes
+the same button handlers directly to avoid timing the automation driver's hit-testing.
 """
 import argparse
 import json
@@ -48,7 +50,7 @@ def main():
             page.goto(a.url,wait_until='networkidle')
             wait_until(page,"document.querySelector('#plot3d').dataset.eventIndex !== undefined")
             assert page.locator('.scene-buffer').count()==2
-            page.click('#playback')
+            page.evaluate("document.querySelector('#playback').click()")
             # Keep rotation enabled: promotion must synchronize to the moving
             # foreground camera, not take the easier unchanged-camera path.
             assert page.locator('#rotate').is_checked()
@@ -68,7 +70,7 @@ def main():
                 target=catalog['events'][(position+1)%len(catalog['events'])]['event_index']
                 key=f"{catalog['generation']}/{target}"
                 wait_until(page,"key => {const p=document.querySelector('#plot3d-buffer');return p.dataset.preparedReady==='true' && p.dataset.preparedKey===key;}",arg=key)
-                page.click('#next')
+                page.evaluate("document.querySelector('#next').click()")
                 wait_until(page,"i => document.querySelector('#plot3d').dataset.eventIndex===String(i)",arg=target)
                 data=page.evaluate('''() => {
                     const p=document.querySelector('#plot3d');
