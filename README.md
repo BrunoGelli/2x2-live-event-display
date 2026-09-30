@@ -25,8 +25,8 @@ python -m pip install -e '.[worker,dev]'
 live2x2 assets
 ```
 
-`assets` downloads the pinned Plotly.js **4.1.1** once. The browser then loads it from
-this service, not a CDN. Offline install: `live2x2 assets --from-file plotly-4.1.1.min.js`.
+`assets` downloads the pinned Plotly.js **strict 4.1.1** once. The browser then loads it from
+this service, not a CDN. Offline install: `live2x2 assets --from-file plotly-strict-4.1.1.min.js`.
 The worker extra pins the existing `ucd2x2` FLOW reader/geometry to commit
 `0400d9b788d4515bee9a22b230df08937475d0ef`. It currently brings that package's declared
 GUI dependencies into the **worker environment**, but the web-only install/container
@@ -111,6 +111,7 @@ time**. New-file cadence and rendering throughput are not guaranteed.
 
 ## Deployment and development
 
+- [Viewer upgrade and safe old-file rollover test](docs/VIEWER_TEST.md).
 - [NERSC staged runbook](docs/NERSC.md): one-file smoke test, watcher, public Spin service.
 - [Architecture and cache contract](docs/ARCHITECTURE.md).
 - [Roadmap and acceptance gates](docs/ROADMAP.md).
@@ -120,6 +121,7 @@ time**. New-file cadence and rendering throughput are not guaranteed.
 pytest -q
 python -m compileall -q src
 node --check src/live2x2/static/app.js
+node --test tests/test_viewer.cjs
 ```
 
 Source FLOW is opened read-only by the reused reader. Only one writer may own a

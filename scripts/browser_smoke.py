@@ -1,32 +1,96 @@
-"""Run against the synthetic demo server, not a changing real detector feed."""
+"""Real HTTP/CSP/WebGL smoke test. Use only a dedicated synthetic demo cache."""
 import argparse
+from pathlib import Path
+
 from playwright.sync_api import sync_playwright
 
-p = argparse.ArgumentParser()
-p.add_argument("--url", default="http://127.0.0.1:8000/")
-p.add_argument("--chromium", help="Optional local Chromium executable")
-a = p.parse_args()
-with sync_playwright() as tools:
-    browser = tools.chromium.launch(headless=True, executable_path=a.chromium,
-        args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
-    page = browser.new_page(viewport={"width": 1440, "height": 1000})
-    errors = []
-    page.on("pageerror", lambda e: errors.append(str(e)))
-    page.goto(a.url, wait_until="networkidle")
-    page.wait_for_function("document.querySelector('#plot3d').dataset.eventIndex !== undefined")
-    assert page.locator("#feed-state").inner_text() == "DEMO", "Use a demo cache"
-    assert "WebGL is not supported" not in page.locator("#plot3d").inner_text()
-    page.click("#playback")
-    first = page.locator("#event-title").inner_text()
-    eye = page.evaluate("document.querySelector('#plot3d').layout.scene.camera.eye")
-    page.wait_for_timeout(700)
-    assert eye != page.evaluate("document.querySelector('#plot3d').layout.scene.camera.eye")
-    page.wait_for_timeout(3500)
-    assert first == page.locator("#event-title").inner_text()
-    page.click("#next")
-    page.wait_for_timeout(700)
-    assert first != page.locator("#event-title").inner_text()
-    assert page.evaluate("new Set(document.querySelector('#plot3d').data[0].marker.color).size") > 1
-    assert not errors, errors
-    browser.close()
-    print("Browser smoke: WebGL, camera, colors, pause and next passed")
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--url', default='http://127.0.0.1:8000/')
+    parser.add_argument('--chromium', help='Optional local Chromium executable')
+    parser.add_argument('--cache', type=Path, help='Dedicated demo cache, enables generation rollover test')
+    args = parser.parse_args()
+    with sync_playwright() as tools:
+        browser = tools.chromium.launch(headless=True, executable_path=args.chromium,
+            args=['--use-angle=swiftshader', '--enable-unsafe-swiftshader'])
+        page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.add_init_script('''window.cspViolations=[];
+          document.addEventListener('securitypolicyviolation',e=>
+            window.cspViolations.push(e.violatedDirective+': '+e.blockedURI));''')
+        try:
+            response = page.goto(args.url, wait_until='networkidle')
+            assert response and "script-src 'self'" in response.headers.get('content-security-policy','')
+            assert 'unsafe-eval' not in response.headers['content-security-policy']
+            page.wait_for_function("document.querySelector('#plot3d').dataset.eventIndex !== undefined")
+            assert page.locator('#feed-state').inner_text() == 'DEMO', 'Use a demo cache'
+            assert 'WebGL is not supported' not in page.locator('#plot3d').inner_text()
+            page.click('#playback')
+            first = page.locator('#event-title').inner_text()
+            eye = page.evaluate("document.querySelector('#plot3d').layout.scene.camera.eye")
+            page.wait_for_timeout(800)
+            assert eye != page.evaluate("document.querySelector('#plot3d').layout.scene.camera.eye")
+            page.wait_for_timeout(3200)
+            assert first == page.locator('#event-title').inner_text(), 'Pause cycling changed the event'
+            catalog = page.request.get(args.url.rstrip('/')+'/api/catalog').json()
+            assert catalog['sampled_events'] >= 3, 'Use at least 3 synthetic events'
+
+            # The forward neighbor is prefetched. The previous/last event is not.
+            target = catalog['events'][-1]['event_index']
+            routes = []
+            route_pattern = f'**/api/generations/{catalog["generation"]}/events/{target}'
+            page.route(route_pattern, lambda route: routes.append(route))
+            page.click('#previous')
+            page.wait_for_timeout(250)
+            assert routes, 'Expected uncached request to hold'
+            eye = page.evaluate("document.querySelector('#plot3d').layout.scene.camera.eye")
+            page.wait_for_timeout(800)
+            assert first == page.locator('#event-title').inner_text()
+            assert eye != page.evaluate("document.querySelector('#plot3d').layout.scene.camera.eye"), \
+                'Camera froze while event fetch waited'
+            routes[0].continue_()
+            page.wait_for_function("i => document.querySelector('#plot3d').dataset.eventIndex === String(i)", arg=target)
+            page.unroute(route_pattern)
+            assert page.evaluate("new Set(document.querySelector('#plot3d').data[0].marker.color).size") > 1
+
+            page.locator('#projection-details summary').click()
+            page.wait_for_function('''() => {
+              const p=document.querySelector('#plot2d');
+              return p.style.visibility === 'visible' && p.data && p.data.length === 3;
+            }''')
+            assert page.evaluate("document.querySelector('#plot2d').data.every(t=>t.type==='scattergl')")
+            assert 'WebGL is not supported' not in page.locator('#plot2d').inner_text()
+            assert page.evaluate('window.cspViolations') == [], page.evaluate('window.cspViolations')
+            # Rendering under real WebGL, not merely changed camera JSON.
+            for selector in ('#plot3d', '#plot2d'):
+                assert page.evaluate('''selector => Array.from(document.querySelector(selector).querySelectorAll('canvas'))
+                    .some(c => !!(c.getContext('webgl') || c.getContext('webgl2')))''', selector), selector
+            page.click('#next')
+            page.wait_for_function("document.querySelector('#plot3d').dataset.eventIndex === '0'")
+            page.wait_for_function("document.querySelector('#plot2d').dataset.eventIndex === '0'")
+
+            if args.cache:
+                from live2x2.cache import latest, writer_lock
+                from live2x2.demo import generate
+                assert latest(args.cache).get('demo'), 'Refusing to modify a non-demo cache'
+                with writer_lock(args.cache):
+                    newer = generate(args.cache, catalog['sampled_events'])
+                page.wait_for_function("!document.querySelector('#latest').hidden", timeout=25000)
+                assert page.locator('#plot3d').get_attribute('data-generation') == catalog['generation'], \
+                    'Paused viewer switched generations without consent'
+                page.click('#latest')
+                page.wait_for_function("g => document.querySelector('#plot3d').dataset.generation === g",
+                    arg=newer['generation'])
+                page.wait_for_function("g => document.querySelector('#plot2d').dataset.generation === g",
+                    arg=newer['generation'])
+            assert not errors, errors
+        finally:
+            browser.close()
+    print('Browser smoke passed: delayed fetch rotation, WebGL 3D/projections, CSP, Q colors, pause/navigation' +
+          (' and generation rollover' if args.cache else ''))
+
+
+if __name__ == '__main__':
+    main()

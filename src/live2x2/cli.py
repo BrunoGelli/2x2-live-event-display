@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -12,12 +13,17 @@ import urllib.request
 
 from .cache import heartbeat, writer_lock
 
+# Git blob identity from the official Plotly.js v4.1.1 tag, dist/plotly-strict.min.js.
+# This checks the COMPLETE file, not just a version string in a truncated download.
+PLOTLY_STRICT_BLOB = "0b56e66aeafc6da5b551c38a1ede369c900e4fcf"
+PLOTLY_STRICT_URL = "https://raw.githubusercontent.com/plotly/plotly.js/v4.1.1/dist/plotly-strict.min.js"
+
 
 def parser():
     p = argparse.ArgumentParser(prog="live2x2")
     sub = p.add_subparsers(dest="command", required=True)
     assets = sub.add_parser("assets", help="Install pinned Plotly.js (once, with internet access)")
-    assets.add_argument("--from-file", type=Path, help="Offline copy of official plotly-4.1.1.min.js")
+    assets.add_argument("--from-file", type=Path, help="Offline copy of official plotly-strict-4.1.1.min.js")
     demo = sub.add_parser("demo", help="Publish clearly labelled synthetic events")
     demo.add_argument("--cache", type=Path, required=True)
     demo.add_argument("--events", type=int, default=60)
@@ -53,15 +59,17 @@ def parser():
 
 
 def install_assets(source=None):
-    from .web import STATIC
-    dest = STATIC / "vendor/plotly.min.js"
+    from .web import STATIC, PLOTLY_ASSET
+    dest = STATIC / PLOTLY_ASSET
     if source:
         data = source.read_bytes()
     else:
-        with urllib.request.urlopen("https://cdn.plot.ly/plotly-4.1.1.min.js", timeout=60) as response:
+        with urllib.request.urlopen(PLOTLY_STRICT_URL, timeout=60) as response:
             data = response.read(15000001)
-    if not 100000 < len(data) <= 15000000 or b"plotly.js v4.1.1" not in data[:200]:
-        raise ValueError("Expected the official Plotly.js v4.1.1 bundle")
+    digest = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+    if not 100000 < len(data) <= 15000000 or digest != PLOTLY_STRICT_BLOB:
+        raise ValueError("Expected the complete official Plotly.js STRICT v4.1.1 bundle; "
+                         "the standard bundle is not compatible with this page's CSP")
     data.decode("utf-8")  # Reject corrupted source rather than quietly replacing bytes.
     dest.parent.mkdir(parents=True, exist_ok=True)
     import tempfile
@@ -74,7 +82,7 @@ def install_assets(source=None):
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    print(f"Installed Plotly.js 4.1.1: {dest}")
+    print(f"Installed Plotly.js STRICT 4.1.1: {dest}")
 
 
 def main(argv=None):
@@ -87,9 +95,9 @@ def main(argv=None):
             return 0
         args.cache = args.cache.expanduser().resolve()
         if args.command == "serve":
-            from .web import create_app, STATIC
+            from .web import create_app, STATIC, PLOTLY_ASSET
             import uvicorn
-            if not (STATIC / "vendor/plotly.min.js").is_file():
+            if not (STATIC / PLOTLY_ASSET).is_file():
                 raise ValueError("Run 'live2x2 assets' once before starting the viewer")
             if not 1 <= args.port <= 65535:
                 raise ValueError("Port must be 1..65535")

@@ -35,3 +35,25 @@ blocks localhost navigation. The sandbox browser could not render WebGL, so thos
 do **not** certify 3D rendering performance. Full pinned-package installation, the
 NERSC proxy, actual CFS throughput, Docker build and Spin rollout require the staged
 smoke tests on their real platforms. No production detector data is included in tests.
+
+## Viewer follow-up regression tests
+
+`node --test tests/test_viewer.cjs` runs the actual frontend source with deterministic
+asynchronous fetch/Plotly substitutes. It verifies rotation during delayed fetches,
+mutual exclusion during the 3D commit, pause-during-fetch behavior, generation/metadata
+consistency, latest-only projection updates, failed-fetch recovery, immutable-request
+caching and zero-event file handling. The delayed-fetch test fails on the original MVP
+source. These concurrency tests do not measure real GPU performance.
+
+`tests/test_assets.py` verifies atomic full-content asset validation and strict-asset
+readiness/CSP behavior. The browser CI job downloads the actual pinned strict bundle
+and exercises the real HTTP/WebGL viewer on synthetic data. For the same full smoke test
+locally, provide a dedicated demo cache:
+
+```bash
+python scripts/browser_smoke.py --url http://127.0.0.1:8000/ --cache ./demo-cache
+```
+
+See [viewer/rollover test](VIEWER_TEST.md) for a safe manual test on older completed FLOW
+files without copying them or changing mtimes. Neither the frontend changes nor the
+smoke tests implement any nearline scheduling integration or reduced-HDF5 product.

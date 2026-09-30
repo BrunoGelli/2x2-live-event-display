@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>2×2 Run 3 | Nearline event display</title>
 <link rel="stylesheet" href="static/style.css">
-<script defer src="static/vendor/plotly.min.js"></script>
+<script defer src="static/vendor/plotly-strict.min.js"></script>
 <script defer src="static/app.js"></script>
 </head>
 <body>
@@ -31,7 +31,7 @@
   <p id="notice" class="notice" role="status">Connecting to the cache service…</p>
   <section class="plot-card"><div id="plot3d" aria-label="Interactive 3D charge display"></div></section>
   <p id="counts" class="caption"></p>
-  <details id="projection-details"><summary>Orthogonal projections</summary><div id="plot2d"></div></details>
+  <details id="projection-details"><summary>Orthogonal projections</summary><p id="projection-status" class="caption" role="status"></p><div id="plot2d"></div></details>
   <details><summary>File and display details</summary><dl id="metadata"></dl></details>
   <p class="caption">Random event rows, including empty and noisy events. No hot-pixel cleaning in this MVP.
     The fixed nominal detector frame is a display window, not a timing correction or a physics cut.

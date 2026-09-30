@@ -17,4 +17,31 @@ jobs:
       - run: pytest -q
       - run: python -m compileall -q src tests
       - run: node --check src/live2x2/static/app.js
+      - run: node --test tests/test_viewer.cjs
       - run: bash -n deploy/watch.slurm
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install . playwright
+      - run: live2x2 assets
+      - run: python -m playwright install --with-deps chromium
+      - name: Real HTTP, CSP, WebGL and rollover smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE="$(mktemp -d)"
+          live2x2 demo --cache "$CACHE" --events 4
+          live2x2 serve --cache "$CACHE" --port 8000 > browser-server.log 2>&1 &
+          SERVER=$!
+          trap 'kill "$SERVER" 2>/dev/null || true; cat browser-server.log' EXIT
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:8000/readyz; then break; fi
+            sleep 1
+          done
+          python scripts/browser_smoke.py --cache "$CACHE"

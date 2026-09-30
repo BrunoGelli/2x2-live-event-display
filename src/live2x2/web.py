@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .cache import GENERATION, SCHEMA, latest, read_json
 
 STATIC = Path(__file__).parent / "static"
+PLOTLY_ASSET = "vendor/plotly-strict.min.js"
 LOG = logging.getLogger(__name__)
 
 
@@ -72,7 +73,7 @@ def create_app(cache_dir=None, *, stale_seconds=600.0, heartbeat_seconds=120.0, 
     @app.get("/readyz")
     def ready():
         manifest()
-        if not (STATIC / "vendor/plotly.min.js").is_file():
+        if not (STATIC / PLOTLY_ASSET).is_file():
             raise HTTPException(503, "Plotly asset not installed")
         return {"cache": "available"}
 

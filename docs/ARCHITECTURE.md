@@ -87,3 +87,16 @@ The event dwell is measured after loading/rendering, so actual loop time include
 No beam/light association guesses; no masks built over the full file; no public raw-file
 serving; no automatic public deployment; no claimed DAQ-real-time latency; no physics
 classification or alarm semantics; no indefinite scheduler renewal.
+
+## Viewer transition update
+
+Pending navigation no longer blocks the camera. Only the actual Plotly 3D commit is
+exclusive with camera updates, and visible catalog/event state is committed afterward.
+Projections have an independent bounded latest-only queue. Event HTTP requests honor
+the server's immutable caching contract; status and catalog remain uncached.
+
+Production format remains **FLOW → sampled JSON → viewer**. There is no intermediate
+`.FLOW.ED.h5` writer or reader. A future nearline adapter should reuse this JSON contract
+and preserve one serialized latest publisher rather than introducing parallel writes
+to the shared `latest.json`. Historical tests use sequential `once` publications in a
+dedicated cache, not a change to `watch`'s newest-only behavior.
