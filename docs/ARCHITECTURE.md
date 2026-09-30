@@ -72,15 +72,23 @@ Only trusted operators can write the cache; filesystem permissions are the trust
 
 ## Browser lifecycle
 
-One reused 3D Plotly scene. The next event is prefetched, with at most three event
-payload promises retained. Catalog IDs pin requests to a consistent generation. New
-catalogs wait for the next event boundary; paused cycling does not silently switch files.
-Fetch errors preserve the visible event. A zero-event file displays an explicit state.
+Two reused 3D Plotly scenes: a visible scene and one prepared next-event buffer.
+Only the visible scene rotates. The next event is prefetched and pre-rendered, with
+at most three event payload promises retained. At handover the prepared scene is
+synchronized to the latest camera, then swapped into view without a point-data redraw.
+These two graph nodes are reused, not accumulated as events/files advance. No crossfade
+or event interpolation is used. See [buffered viewer details](BUFFERED_VIEWER.md).
+
+Catalog IDs pin requests to a consistent generation. New catalogs wait for the next
+event boundary; paused cycling does not silently switch files. Fetch/preparation
+errors preserve the visible event. A zero-event file displays an explicit state.
 
 Camera motion uses requestAnimationFrame and a single in-flight Plotly.relayout.
 No frame-by-frame HTTP/WebSocket traffic. Drag/zoom pauses rotation for inspection.
 Cycling and rotation are separate controls; changing either requires no worker action.
-The event dwell is measured after loading/rendering, so actual loop time includes overhead.
+The event dwell is measured after handover, so actual loop time includes overhead.
+Pre-rendering still shares the browser main thread and consumes bounded additional
+GPU memory; it removes the foreground data redraw, not all possible rendering hitches.
 
 ## Deliberately absent
 
@@ -88,9 +96,9 @@ No beam/light association guesses; no masks built over the full file; no public 
 serving; no automatic public deployment; no claimed DAQ-real-time latency; no physics
 classification or alarm semantics; no indefinite scheduler renewal.
 
-## Viewer transition update
+## Viewer transition and production boundary
 
-Pending navigation no longer blocks the camera. Only the actual Plotly 3D commit is
+Pending navigation no longer blocks the camera. Only the ready-scene handover is
 exclusive with camera updates, and visible catalog/event state is committed afterward.
 Projections have an independent bounded latest-only queue. Event HTTP requests honor
 the server's immutable caching contract; status and catalog remain uncached.
