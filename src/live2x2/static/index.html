@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2×2 Run 3 | Nearline event display</title>
+<link rel="stylesheet" href="static/style.css">
+<script defer src="static/vendor/plotly.min.js"></script>
+<script defer src="static/app.js"></script>
+</head>
+<body>
+<header>
+  <div><p class="eyebrow">ND-LAr · Run 3 · Shifter monitor</p><h1>2×2 live event display</h1></div>
+  <div class="feed"><strong id="feed-state" class="badge">CONNECTING</strong><span id="feed-age">Waiting for cache</span></div>
+</header>
+<main>
+  <section class="controls" aria-label="Playback controls">
+    <label>Event selection<select id="selection"><option value="random">Random · no selection cuts</option></select></label>
+    <label>Seconds / event<input id="dwell" type="number" min="1" max="30" step="0.5" value="3"></label>
+    <label>Seconds / turn<input id="turn" type="number" min="4" max="120" step="1" value="12"></label>
+    <label class="check"><input id="rotate" type="checkbox" checked>Rotate camera</label>
+    <button id="previous" aria-label="Previous event">← Previous</button>
+    <button id="playback" aria-pressed="false">Pause cycling</button>
+    <button id="next" aria-label="Next event">Next →</button>
+    <button id="latest" hidden>Show newer file</button>
+  </section>
+  <section class="event-bar" aria-live="polite">
+    <div><h2 id="event-title">Waiting for first completed FLOW file</h2><span id="event-detail">The viewer does not read detector files directly.</span></div>
+    <div id="event-metrics"></div>
+  </section>
+  <p id="notice" class="notice" role="status">Connecting to the cache service…</p>
+  <section class="plot-card"><div id="plot3d" aria-label="Interactive 3D charge display"></div></section>
+  <p id="counts" class="caption"></p>
+  <details id="projection-details"><summary>Orthogonal projections</summary><div id="plot2d"></div></details>
+  <details><summary>File and display details</summary><dl id="metadata"></dl></details>
+  <p class="caption">Random event rows, including empty and noisy events. No hot-pixel cleaning in this MVP.
+    The fixed nominal detector frame is a display window, not a timing correction or a physics cut.
+    Q uses the input file’s units. Nonpositive Q stays at the low end of the per-event log color scale.</p>
+</main>
+<footer><strong>Nearline, not instantaneous DAQ.</strong> Freshness is measured from the FLOW file’s filesystem modification time, not the detector acquisition time. This display is not an alarm system.</footer>
+<noscript>This event display requires JavaScript.</noscript>
+</body>
+</html>
